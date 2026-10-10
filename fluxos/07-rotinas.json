@@ -1,0 +1,328 @@
+{
+  "id": "ajRotinas0000001",
+  "name": "Assistente Jurídico | 2. Rotinas (lembretes, follow-up, agenda do dia)",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "13a27025-26f9-500b-b0f1-c693a8441f57",
+      "name": "A cada 15 minutos",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- 1) lembretes de reunião (24h e 1h antes)\nSELECT 'lembrete_' || tipo_lembrete AS tipo, agendamento_id::text AS ref_id, lead_id, whatsapp AS numero, instancia_whatsapp AS instancia,\n       nome, responsavel, inicio, modalidade, link_reuniao, endereco, escritorio\nFROM lembretes_pendentes\nUNION ALL\n-- 2) follow-up: cliente parou de responder há ~20h sem agendar (dentro da janela de 24h do WhatsApp)\nSELECT 'followup', l.id::text, l.id, l.whatsapp, e.instancia_whatsapp, COALESCE(l.nome, l.nome_whatsapp), NULL, NULL, NULL, NULL, e.endereco, e.nome\nFROM leads l JOIN escritorios e ON e.id = l.escritorio_id\nWHERE e.ativo AND e.followup_ativo AND l.status IN ('novo', 'em_triagem')\n  AND l.followup_enviado_em IS NULL AND (l.ia_pausada_ate IS NULL OR l.ia_pausada_ate < now())\n  AND l.ultima_msg_cliente_em BETWEEN now() - interval '23 hours' AND now() - interval '20 hours'\n  AND (SELECT papel FROM mensagens m WHERE m.lead_id = l.id ORDER BY m.id DESC LIMIT 1) = 'assistente'\nLIMIT 100;",
+        "options": {}
+      },
+      "id": "28b16670-e2d6-5be8-98e7-1031f37354fe",
+      "name": "Mensagens a enviar",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ajCredPostgres01",
+          "name": "Postgres - Agente"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const TZ = 'America/Sao_Paulo';\nconst fmtFone = (n) => { const d = String(n || '').replace(/\\D/g, ''); if (d.length >= 12 && d.startsWith('55')) { const r = d.slice(2); return `+55 (${r.slice(0,2)}) ${r.slice(2, r.length-4)}-${r.slice(-4)}`; } return '+' + d; };\nconst fmtData = (iso) => DateTime.fromISO(String(iso), { zone: TZ }).setZone(TZ).setLocale('pt-BR').toFormat(\"cccc, dd/MM/yyyy 'às' HH:mm\");\n\nreturn $input.all().filter(i => i.json.numero).map(({ json: d }) => {\n  const nome = d.nome ? d.nome.split(' ')[0] : '';\n  const quando = d.inicio ? DateTime.fromISO(d.inicio).setZone(TZ).setLocale('pt-BR') : null;\n  const local = d.modalidade === 'online' ? (d.link_reuniao ? `online, pelo link: ${d.link_reuniao}` : 'online')\n    : d.modalidade === 'telefone' ? 'por telefone' : `no endereço ${d.endereco}`;\n  let texto;\n  if (d.tipo === 'lembrete_24h') {\n    texto = `Olá${nome ? ', ' + nome : ''}! Aqui é a assistente virtual do ${d.escritorio}. Passando para lembrar da sua reunião com ${d.responsavel || 'nossa equipe'} ${quando.hasSame(DateTime.now().setZone(TZ), 'day') ? 'hoje' : quando.hasSame(DateTime.now().setZone(TZ).plus({ days: 1 }), 'day') ? 'amanhã' : quando.toFormat('cccc')} (${quando.toFormat(\"dd/MM\")}) às ${quando.toFormat('HH:mm')}, ${local}.\\n\\nPode confirmar sua presença? Se precisar remarcar, é só me avisar por aqui.`;\n  } else if (d.tipo === 'lembrete_1h') {\n    texto = `${nome ? nome + ', s' : 'S'}ua reunião com ${d.responsavel || 'nossa equipe'} começa às ${quando.toFormat('HH:mm')}, ${local}. Até já!`;\n  } else {\n    texto = `Olá${nome ? ', ' + nome : ''}! Ficou alguma dúvida? Se quiser, posso verificar um horário para você conversar com um de nossos advogados.`;\n  }\n  return { json: { ...d, texto } };\n});"
+      },
+      "id": "c61a191c-aaaf-5fa2-afaf-250dfe2680fb",
+      "name": "Escrever mensagem",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "id": "cd2bf9ab-49a2-5a61-95b4-efb3e7cd41cf",
+      "name": "Uma por vez",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        660,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ \"http://evolution:8080\" + \"/message/sendText/\" + encodeURIComponent($json.instancia) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $json.numero, text: $json.texto, delay: 1500 }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "91f94393-3366-54a8-a1f9-8c2f8604ece4",
+      "name": "Enviar WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        280
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ajCredEvolution1",
+          "name": "Evolution API"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Marca como enviado e grava na memória da IA, para ela entender respostas como \"confirmo\" ou \"quero remarcar\".\nWITH d AS (SELECT $1 AS tipo, $2 AS ref, $3::uuid AS lead, $4 AS texto, NULLIF($5, '') AS wa, $6::boolean AS ok),\na24 AS (UPDATE agendamentos SET lembrete_24h_em = now() WHERE (SELECT tipo FROM d) = 'lembrete_24h' AND id::text = (SELECT ref FROM d) RETURNING id),\na1  AS (UPDATE agendamentos SET lembrete_1h_em = now(), lembrete_24h_em = COALESCE(lembrete_24h_em, now())\n        WHERE (SELECT tipo FROM d) = 'lembrete_1h' AND id::text = (SELECT ref FROM d) RETURNING id),\nfu  AS (UPDATE leads SET followup_enviado_em = now() WHERE (SELECT tipo FROM d) = 'followup' AND id = (SELECT lead FROM d) RETURNING id),\nm   AS (INSERT INTO mensagens (lead_id, papel, conteudo, tipo, wa_message_id)\n        SELECT lead, 'assistente', texto, CASE WHEN tipo = 'followup' THEN 'followup' ELSE 'lembrete' END, wa FROM d WHERE ok\n        ON CONFLICT DO NOTHING RETURNING id),\nh   AS (INSERT INTO n8n_chat_histories (session_id, message)\n        SELECT lead::text, jsonb_build_object('type', 'ai', 'content', texto, 'tool_calls', '[]'::jsonb, 'additional_kwargs', '{}'::jsonb,\n                                              'response_metadata', '{}'::jsonb, 'invalid_tool_calls', '[]'::jsonb)\n        FROM d WHERE ok RETURNING id)\nSELECT (SELECT count(*) FROM m) AS registradas;",
+        "options": {
+          "queryReplacement": "={{ [$('Uma por vez').item.json.tipo, $('Uma por vez').item.json.ref_id, $('Uma por vez').item.json.lead_id, $('Uma por vez').item.json.texto, $json.key?.id ?? '', String(!!$json.key?.id)] }}"
+        }
+      },
+      "id": "0ae0f96a-d35a-5ecd-ae29-7b1107b1424d",
+      "name": "Registrar envio",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1100,
+        280
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ajCredPostgres01",
+          "name": "Postgres - Agente"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * 1-6"
+            }
+          ]
+        }
+      },
+      "id": "f016d833-e509-59af-8698-ae4318be7f2b",
+      "name": "Todo dia às 7h (seg-sáb)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT r.nome, r.whatsapp, e.instancia_whatsapp AS instancia,\n       jsonb_agg(jsonb_build_object('inicio', a.inicio, 'cliente', COALESCE(l.nome, l.nome_whatsapp), 'whatsapp', l.whatsapp,\n                                    'modalidade', a.modalidade, 'area', a.area, 'resumo', a.resumo, 'status', a.status, 'link', a.link_reuniao)\n                 ORDER BY a.inicio) AS reunioes,\n       (SELECT count(*) FROM encaminhamentos x WHERE x.responsavel_id = r.id AND x.resolvido_em IS NULL\n          AND x.criado_em > now() - interval '7 days') AS encaminhamentos_abertos\nFROM agendamentos a\nJOIN responsaveis r ON r.id = a.responsavel_id AND r.ativo AND r.recebe_agenda_diaria\nJOIN escritorios e ON e.id = a.escritorio_id AND e.ativo\nJOIN leads l ON l.id = a.lead_id\nWHERE a.status IN ('marcado', 'confirmado')\n  AND (a.inicio AT TIME ZONE 'America/Sao_Paulo')::date = (now() AT TIME ZONE 'America/Sao_Paulo')::date\nGROUP BY r.id, r.nome, r.whatsapp, e.instancia_whatsapp;",
+        "options": {}
+      },
+      "id": "78a9e398-e4c2-54fc-8940-e148c9e9ba0d",
+      "name": "Agenda do dia por advogado",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        560
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ajCredPostgres01",
+          "name": "Postgres - Agente"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const TZ = 'America/Sao_Paulo';\nconst fmtFone = (n) => { const d = String(n || '').replace(/\\D/g, ''); if (d.length >= 12 && d.startsWith('55')) { const r = d.slice(2); return `+55 (${r.slice(0,2)}) ${r.slice(2, r.length-4)}-${r.slice(-4)}`; } return '+' + d; };\nconst fmtData = (iso) => DateTime.fromISO(String(iso), { zone: TZ }).setZone(TZ).setLocale('pt-BR').toFormat(\"cccc, dd/MM/yyyy 'às' HH:mm\");\n\nreturn $input.all().filter(i => i.json.whatsapp).map(({ json: r }) => {\n  const itens = r.reunioes.map(a => {\n    const h = DateTime.fromISO(a.inicio).setZone(TZ).toFormat('HH:mm');\n    return `*${h}* - ${a.cliente} (${a.modalidade}${a.status === 'confirmado' ? ', confirmado ✅' : ''})\\n   ${a.area || '-'} · wa.me/${a.whatsapp}${a.link ? '\\n   ' + a.link : ''}${a.resumo ? '\\n   _' + a.resumo.slice(0, 160) + '_' : ''}`;\n  });\n  const texto = `☀️ Bom dia, ${r.nome}! Sua agenda de hoje (${DateTime.now().setZone(TZ).toFormat('dd/MM')}):\\n\\n${itens.join('\\n\\n')}`\n    + (Number(r.encaminhamentos_abertos) ? `\\n\\n📌 Você tem ${r.encaminhamentos_abertos} atendimento(s) encaminhado(s) em aberto.` : '');\n  return { json: { instancia: r.instancia, numero: r.whatsapp, texto } };\n});"
+      },
+      "id": "6855049f-09c9-50fc-aa34-c4a8545851ef",
+      "name": "Escrever agenda",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ \"http://evolution:8080\" + \"/message/sendText/\" + encodeURIComponent($json.instancia) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $json.numero, text: $json.texto }) }}",
+        "options": {
+          "timeout": 30000,
+          "batching": {
+            "batch": {
+              "batchSize": 1,
+              "batchInterval": 800
+            }
+          }
+        }
+      },
+      "id": "66a6c932-8b12-557d-8adb-4ff4da1dda2d",
+      "name": "Enviar agenda",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        560
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ajCredEvolution1",
+          "name": "Evolution API"
+        }
+      },
+      "onError": "continueRegularOutput"
+    }
+  ],
+  "connections": {
+    "A cada 15 minutos": {
+      "main": [
+        [
+          {
+            "node": "Mensagens a enviar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mensagens a enviar": {
+      "main": [
+        [
+          {
+            "node": "Escrever mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escrever mensagem": {
+      "main": [
+        [
+          {
+            "node": "Uma por vez",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Uma por vez": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Enviar WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar WhatsApp": {
+      "main": [
+        [
+          {
+            "node": "Registrar envio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar envio": {
+      "main": [
+        [
+          {
+            "node": "Uma por vez",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Todo dia às 7h (seg-sáb)": {
+      "main": [
+        [
+          {
+            "node": "Agenda do dia por advogado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agenda do dia por advogado": {
+      "main": [
+        [
+          {
+            "node": "Escrever agenda",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escrever agenda": {
+      "main": [
+        [
+          {
+            "node": "Enviar agenda",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "ajAlertaErros001"
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

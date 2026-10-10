@@ -1,0 +1,124 @@
+{
+  "id": "ajRetomarIA00001",
+  "name": "Assistente Jurídico | 3. Retomar IA (Chatwoot)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chatwoot",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "416c5c94-cc49-5458-806f-e2bcd957764f",
+      "name": "Webhook Chatwoot",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        300
+      ],
+      "webhookId": "aj-chatwoot-webhook"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c0",
+              "leftValue": "={{ $json.body.event }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "conversation_status_changed"
+            },
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.body.status }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "resolved"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "63a9c998-7afc-576f-ae14-9285a18e6003",
+      "name": "Conversa resolvida?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH l AS (\n  UPDATE leads l SET ia_pausada_ate = NULL,\n         status = CASE WHEN l.status = 'humano' THEN 'em_triagem' ELSE l.status END, atualizado_em = now()\n  FROM escritorios e\n  WHERE e.id = l.escritorio_id AND e.chatwoot_inbox_id = $1::int AND l.whatsapp = $2\n  RETURNING l.id)\nUPDATE encaminhamentos SET resolvido_em = now()\nWHERE lead_id IN (SELECT id FROM l) AND resolvido_em IS NULL\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$json.body.inbox_id, String($json.body.meta?.sender?.phone_number ?? '').replace(/\\D/g, '')] }}"
+        }
+      },
+      "id": "1111b235-8128-543e-aa2e-b0b4c2b9e4d3",
+      "name": "Reativar IA",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        440,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ajCredPostgres01",
+          "name": "Postgres - Agente"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Chatwoot": {
+      "main": [
+        [
+          {
+            "node": "Conversa resolvida?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conversa resolvida?": {
+      "main": [
+        [
+          {
+            "node": "Reativar IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "ajAlertaErros001"
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

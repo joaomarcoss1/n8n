@@ -1,0 +1,728 @@
+{
+  "id": "ajToolGerenciar1",
+  "name": "Assistente Jurídico | Tool - Gerenciar agendamento",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "escritorio_id"
+            },
+            {
+              "name": "lead_id"
+            },
+            {
+              "name": "acao"
+            },
+            {
+              "name": "agendamento_id"
+            },
+            {
+              "name": "novo_inicio"
+            }
+          ]
+        }
+      },
+      "id": "e932cb58-9dc4-5116-91f2-5a963ef761f5",
+      "name": "Chamado pela IA",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Só enxerga reuniões DESTE cliente: a IA não consegue mexer na agenda de outra pessoa.\nSELECT a.*, to_jsonb(r) AS responsavel, e.instancia_whatsapp, e.endereco, e.duracao_reuniao_min,\n       COALESCE(l.nome, l.nome_whatsapp) AS nome_cliente, l.whatsapp,\n       (SELECT count(*) FROM agendamentos x WHERE x.lead_id = l.id AND x.status IN ('marcado','confirmado') AND x.inicio > now()) AS total_futuras,\n       (SELECT jsonb_agg(jsonb_build_object('id', x.id, 'inicio', x.inicio, 'modalidade', x.modalidade, 'status', x.status) ORDER BY x.inicio)\n          FROM agendamentos x WHERE x.lead_id = l.id AND x.status IN ('marcado','confirmado') AND x.inicio > now()) AS futuras\nFROM leads l\nJOIN escritorios e ON e.id = l.escritorio_id\nLEFT JOIN LATERAL (\n  SELECT * FROM agendamentos a\n  WHERE a.lead_id = l.id AND a.status IN ('marcado','confirmado') AND a.inicio > now()\n    AND (NULLIF($3, '') IS NULL OR a.id::text = $3)\n  ORDER BY a.inicio LIMIT 1) a ON true\nLEFT JOIN responsaveis r ON r.id = a.responsavel_id\nWHERE l.id = $2::uuid AND l.escritorio_id = $1::uuid;",
+        "options": {
+          "queryReplacement": "={{ [$json.escritorio_id, $json.lead_id, $json.agendamento_id ?? ''] }}"
+        }
+      },
+      "id": "cb82f690-f252-53a9-9bf3-0098def087fa",
+      "name": "Reunião do cliente",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ajCredPostgres01",
+          "name": "Postgres - Agente"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r0",
+                    "leftValue": "={{ $json.id ? \"ok\" : \"\" }}",
+                    "rightValue": "",
+                    "operator": {
+                      "type": "string",
+                      "operation": "empty",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "sem reunião"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r1",
+                    "leftValue": "={{ $('Chamado pela IA').first().json.acao.toLowerCase().trim() }}",
+                    "rightValue": "confirmar",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "confirmar"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r2",
+                    "leftValue": "={{ $('Chamado pela IA').first().json.acao.toLowerCase().trim() }}",
+                    "rightValue": "cancelar",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "cancelar"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "r3",
+                    "leftValue": "={{ $('Chamado pela IA').first().json.acao.toLowerCase().trim() }}",
+                    "rightValue": "remarcar",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "remarcar"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "listar"
+        }
+      },
+      "id": "241adb09-9fc2-5167-985d-e49f87520715",
+      "name": "Qual ação?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { resposta: 'Este cliente não tem reuniões futuras agendadas (ou o id informado não pertence a ele). Ofereça agendar uma nova com consultar_horarios.' } }];"
+      },
+      "id": "ed0ce65a-781e-5b54-81a0-8ff69e48bb21",
+      "name": "Sem reunião",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const TZ = 'America/Sao_Paulo';\nconst fmtFone = (n) => { const d = String(n || '').replace(/\\D/g, ''); if (d.length >= 12 && d.startsWith('55')) { const r = d.slice(2); return `+55 (${r.slice(0,2)}) ${r.slice(2, r.length-4)}-${r.slice(-4)}`; } return '+' + d; };\nconst fmtData = (iso) => DateTime.fromISO(String(iso), { zone: TZ }).setZone(TZ).setLocale('pt-BR').toFormat(\"cccc, dd/MM/yyyy 'às' HH:mm\");\n\nconst d = $('Reunião do cliente').first().json;\nconst linhas = (d.futuras || []).map(a => `- ${fmtData(a.inicio)} (${a.modalidade}, ${a.status}) [id: ${a.id}]`);\nreturn [{ json: { resposta: `Reuniões futuras do cliente:\\n${linhas.join('\\n')}` } }];"
+      },
+      "id": "215049fb-e545-53e0-930d-10bd1c8e065f",
+      "name": "Listar reuniões",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE agendamentos SET status = 'confirmado', atualizado_em = now() WHERE id = $1::uuid RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$json.id] }}"
+        }
+      },
+      "id": "5ca70d96-eb1b-5698-a529-39239d5f06e3",
+      "name": "Confirmar presença",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        660,
+        200
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ajCredPostgres01",
+          "name": "Postgres - Agente"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const TZ = 'America/Sao_Paulo';\nconst fmtFone = (n) => { const d = String(n || '').replace(/\\D/g, ''); if (d.length >= 12 && d.startsWith('55')) { const r = d.slice(2); return `+55 (${r.slice(0,2)}) ${r.slice(2, r.length-4)}-${r.slice(-4)}`; } return '+' + d; };\nconst fmtData = (iso) => DateTime.fromISO(String(iso), { zone: TZ }).setZone(TZ).setLocale('pt-BR').toFormat(\"cccc, dd/MM/yyyy 'às' HH:mm\");\n\nconst d = $('Reunião do cliente').first().json;\nreturn [{ json: { resposta: `Presença CONFIRMADA na reunião de ${fmtData(d.inicio)} com ${d.responsavel?.nome || 'a equipe'}. Agradeça ao cliente.` } }];"
+      },
+      "id": "6f3c1ad3-8bdd-5167-baab-ba674afa7e67",
+      "name": "Resposta: confirmado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "ajToolAgendar001",
+          "mode": "list",
+          "cachedResultName": "Assistente Jurídico | Tool - Agendar reunião"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "escritorio_id": "={{ $('Chamado pela IA').first().json.escritorio_id }}",
+            "lead_id": "={{ $('Chamado pela IA').first().json.lead_id }}",
+            "inicio": "={{ $('Chamado pela IA').first().json.novo_inicio }}",
+            "modalidade": "={{ $json.modalidade }}",
+            "area": "={{ $json.area ?? '' }}",
+            "resumo_caso": "={{ $json.resumo ?? '' }}",
+            "nome_cliente": "={{ $json.nome_cliente }}",
+            "email_cliente": "",
+            "responsavel_id": "={{ $json.responsavel_id ?? '' }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "escritorio_id",
+              "displayName": "escritorio_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "inicio",
+              "displayName": "inicio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "modalidade",
+              "displayName": "modalidade",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "area",
+              "displayName": "area",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "resumo_caso",
+              "displayName": "resumo_caso",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "nome_cliente",
+              "displayName": "nome_cliente",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "email_cliente",
+              "displayName": "email_cliente",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "responsavel_id",
+              "displayName": "responsavel_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "e42700e8-4d57-5c2d-9395-accb1135ef54",
+      "name": "Agendar novo horário",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        660,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c0",
+              "leftValue": "={{ $json.resposta }}",
+              "operator": {
+                "type": "string",
+                "operation": "startsWith"
+              },
+              "rightValue": "Reunião AGENDADA"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "bb80d614-5d6d-55ff-85ad-e6a8aa9ddc81",
+      "name": "Remarcou?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { resposta: 'Não foi possível remarcar: ' + $json.resposta + ' A reunião original continua marcada.' } }];"
+      },
+      "id": "07f9ec31-33ba-5ee7-96bd-8c9cce8d19b2",
+      "name": "Resposta: não remarcou",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        600
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE agendamentos SET status = 'cancelado', atualizado_em = now()\nWHERE id = $1::uuid RETURNING id, google_calendar_id, google_event_id;",
+        "options": {
+          "queryReplacement": "={{ [$('Reunião do cliente').first().json.id] }}"
+        }
+      },
+      "id": "0f393453-6c2d-53fe-9c9f-eba83ddc4eba",
+      "name": "Cancelar no banco",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1100,
+        380
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ajCredPostgres01",
+          "name": "Postgres - Agente"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c0",
+              "leftValue": "={{ $json.google_event_id }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1547bf07-22ef-500b-b087-5d8d9d2ceafd",
+      "name": "Tem evento no Google?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "method": "DELETE",
+        "url": "={{ 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent($json.google_calendar_id) + '/events/' + $json.google_event_id + '?sendUpdates=all' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "378043ce-bb9c-5323-934b-633d90ccd917",
+      "name": "Apagar evento no Google",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        300
+      ],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "ajCredGoogleCal1",
+          "name": "Google Agenda"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const TZ = 'America/Sao_Paulo';\nconst fmtFone = (n) => { const d = String(n || '').replace(/\\D/g, ''); if (d.length >= 12 && d.startsWith('55')) { const r = d.slice(2); return `+55 (${r.slice(0,2)}) ${r.slice(2, r.length-4)}-${r.slice(-4)}`; } return '+' + d; };\nconst fmtData = (iso) => DateTime.fromISO(String(iso), { zone: TZ }).setZone(TZ).setLocale('pt-BR').toFormat(\"cccc, dd/MM/yyyy 'às' HH:mm\");\n\nconst d = $('Reunião do cliente').first().json;\nconst remarcou = $('Chamado pela IA').first().json.acao.toLowerCase().trim() === 'remarcar';\nconst novo = remarcou ? $('Agendar novo horário').first().json.resposta : '';\nreturn [{ json: {\n  instancia: d.instancia_whatsapp, numero: d.responsavel?.whatsapp,\n  texto: `${remarcou ? '🔁 *Reunião remarcada*' : '❌ *Reunião cancelada pelo cliente*'}\\n\\n*Cliente:* ${d.nome_cliente} (wa.me/${d.whatsapp})\\n*${remarcou ? 'Horário antigo' : 'Horário'}:* ${fmtData(d.inicio)}${remarcou ? '\\n_O novo horário foi enviado em outra mensagem._' : ''}`,\n  resposta: remarcou\n    ? novo.replace('Reunião AGENDADA', 'Reunião REMARCADA') + ` O horário antigo (${fmtData(d.inicio)}) foi cancelado.`\n    : `Reunião de ${fmtData(d.inicio)} CANCELADA. Confirme ao cliente e pergunte se deseja agendar outro horário.`,\n}}];"
+      },
+      "id": "7f8fb5d7-0e3c-5b17-a433-7c6e180af117",
+      "name": "Avisar advogado do cancelamento",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1760,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ \"http://evolution:8080\" + \"/message/sendText/\" + encodeURIComponent($json.instancia) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $json.numero, text: $json.texto }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "93674e0d-53b1-5f95-bb10-b4f73365d65f",
+      "name": "Enviar aviso ao advogado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1980,
+        380
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ajCredEvolution1",
+          "name": "Evolution API"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { resposta: $('Avisar advogado do cancelamento').first().json.resposta } }];"
+      },
+      "id": "f6d22d7d-d182-5210-85d5-1459a1fb4a38",
+      "name": "Resposta: cancelado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        380
+      ]
+    }
+  ],
+  "connections": {
+    "Chamado pela IA": {
+      "main": [
+        [
+          {
+            "node": "Reunião do cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reunião do cliente": {
+      "main": [
+        [
+          {
+            "node": "Qual ação?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qual ação?": {
+      "main": [
+        [
+          {
+            "node": "Sem reunião",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Confirmar presença",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Cancelar no banco",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Agendar novo horário",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Listar reuniões",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirmar presença": {
+      "main": [
+        [
+          {
+            "node": "Resposta: confirmado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Agendar novo horário": {
+      "main": [
+        [
+          {
+            "node": "Remarcou?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remarcou?": {
+      "main": [
+        [
+          {
+            "node": "Cancelar no banco",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resposta: não remarcou",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cancelar no banco": {
+      "main": [
+        [
+          {
+            "node": "Tem evento no Google?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tem evento no Google?": {
+      "main": [
+        [
+          {
+            "node": "Apagar evento no Google",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Avisar advogado do cancelamento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apagar evento no Google": {
+      "main": [
+        [
+          {
+            "node": "Avisar advogado do cancelamento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Avisar advogado do cancelamento": {
+      "main": [
+        [
+          {
+            "node": "Enviar aviso ao advogado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar aviso ao advogado": {
+      "main": [
+        [
+          {
+            "node": "Resposta: cancelado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "ajAlertaErros001"
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

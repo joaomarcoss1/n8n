@@ -1,0 +1,123 @@
+{
+  "id": "ajToolRegistrar1",
+  "name": "Assistente Jurídico | Tool - Registrar dados do cliente",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "escritorio_id"
+            },
+            {
+              "name": "lead_id"
+            },
+            {
+              "name": "nome"
+            },
+            {
+              "name": "email"
+            },
+            {
+              "name": "area"
+            },
+            {
+              "name": "resumo_caso"
+            },
+            {
+              "name": "urgencia"
+            },
+            {
+              "name": "ja_e_cliente"
+            },
+            {
+              "name": "consentimento_lgpd"
+            }
+          ]
+        }
+      },
+      "id": "0ad0f8e2-b10f-5bf9-9bb1-5eb80910062f",
+      "name": "Chamado pela IA",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE leads SET\n  nome        = COALESCE(NULLIF(trim($3), ''), nome),\n  email       = COALESCE(CASE WHEN $4 ~ '^\\S+@\\S+\\.\\S+$' THEN lower(trim($4)) END, email),\n  area        = COALESCE(NULLIF(lower(trim($5)), ''), area),\n  resumo_caso = COALESCE(NULLIF(trim($6), ''), resumo_caso),\n  urgencia    = COALESCE(CASE WHEN lower($7) IN ('baixa','media','média','alta') THEN replace(lower($7), 'é', 'e') END, urgencia),\n  ja_e_cliente = ja_e_cliente OR lower($8) IN ('sim','true','s'),\n  consentimento_lgpd_em = COALESCE(consentimento_lgpd_em, CASE WHEN lower($9) IN ('sim','true','s') THEN now() END),\n  atualizado_em = now()\nWHERE id = $2::uuid AND escritorio_id = $1::uuid\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$json.escritorio_id, $json.lead_id, $json.nome ?? '', $json.email ?? '', $json.area ?? '', $json.resumo_caso ?? '', $json.urgencia ?? '', $json.ja_e_cliente ?? '', $json.consentimento_lgpd ?? ''] }}"
+        }
+      },
+      "id": "7148807c-6649-54ba-bec6-c6721227ceb9",
+      "name": "Atualizar cadastro",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ajCredPostgres01",
+          "name": "Postgres - Agente"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { resposta: $input.all().length && $input.first().json.id ? 'Dados registrados.' : 'Não foi possível registrar (cliente não encontrado).' } }];"
+      },
+      "id": "e576d30b-86ec-5f83-8899-4ab1f6cca61d",
+      "name": "Resposta para a IA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Chamado pela IA": {
+      "main": [
+        [
+          {
+            "node": "Atualizar cadastro",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Atualizar cadastro": {
+      "main": [
+        [
+          {
+            "node": "Resposta para a IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "ajAlertaErros001"
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

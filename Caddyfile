@@ -1,0 +1,15 @@
+{
+	email {$ACME_EMAIL}
+}
+
+{$N8N_SUBDOMAIN}.{$DOMAIN} {
+	reverse_proxy n8n:5678
+}
+
+{$EVOLUTION_SUBDOMAIN}.{$DOMAIN} {
+	reverse_proxy evolution:8080
+}
+
+{$CHATWOOT_SUBDOMAIN}.{$DOMAIN} {
+	reverse_proxy chatwoot-rails:3000
+}

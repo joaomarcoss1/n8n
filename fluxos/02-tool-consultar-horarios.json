@@ -1,0 +1,201 @@
+{
+  "id": "ajToolHorarios01",
+  "name": "Assistente Jurídico | Tool - Consultar horários",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "escritorio_id"
+            },
+            {
+              "name": "lead_id"
+            },
+            {
+              "name": "data_inicial"
+            },
+            {
+              "name": "periodo"
+            },
+            {
+              "name": "area"
+            }
+          ]
+        }
+      },
+      "id": "6e426b1e-19ef-545f-a7ee-e7346bb8bb88",
+      "name": "Chamado pela IA",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH p AS (SELECT $1::uuid AS esc, $2::uuid AS lead, NULLIF(lower($3), '') AS area),\nr AS (SELECT * FROM responsaveis\n      WHERE id = escolher_responsavel((SELECT esc FROM p), (SELECT lead FROM p), (SELECT area FROM p), false, true))\nSELECT to_jsonb(e) AS escritorio,\n       to_jsonb(r) AS responsavel,\n       COALESCE(r.google_calendar_id, e.google_calendar_id, '') AS calendar_id,\n       COALESCE((SELECT jsonb_agg(jsonb_build_array(a.inicio, a.fim)) FROM agendamentos a\n                 WHERE a.status IN ('marcado', 'confirmado') AND a.fim > now()\n                   AND (a.responsavel_id = r.id OR (r.id IS NULL AND a.escritorio_id = e.id))), '[]') AS ocupados\nFROM escritorios e LEFT JOIN r ON true\nWHERE e.id = (SELECT esc FROM p);",
+        "options": {
+          "queryReplacement": "={{ [$json.escritorio_id, $json.lead_id, $json.area ?? ''] }}"
+        }
+      },
+      "id": "c28ddfd2-39cc-537b-bdb1-f870369f9bf0",
+      "name": "Dados da agenda",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ajCredPostgres01",
+          "name": "Postgres - Agente"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c0",
+              "leftValue": "={{ $json.calendar_id }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "f28191d0-f7a9-5dbb-bde9-310b85d191f2",
+      "name": "Tem Google Agenda?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/calendar/v3/freeBusy",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ timeMin: $now.toISO(), timeMax: $now.plus({ days: $json.escritorio.dias_para_frente + 1 }).toISO(), timeZone: 'America/Sao_Paulo', items: [{ id: $json.calendar_id }] }) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "d567191e-b66b-552f-97eb-0ddd1f3bdbe3",
+      "name": "Google Agenda: ocupado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        200
+      ],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "ajCredGoogleCal1",
+          "name": "Google Agenda"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const base = $('Dados da agenda').first().json;\nconst google = $input.first().json;\nconst TZ = 'America/Sao_Paulo';\nconst esc = base.escritorio, resp = base.responsavel;\nconst pedido = $('Chamado pela IA').first().json;\n\nif (!resp) return [{ json: { resposta: 'Não há advogado disponível para reuniões cadastrado. Use transferir_para_humano.' } }];\n\nconst ocupados = (base.ocupados || []).map(([i, f]) => [DateTime.fromISO(i).toMillis(), DateTime.fromISO(f).toMillis()]);\nif (base.calendar_id) {\n  const cal = google?.calendars?.[base.calendar_id];\n  if (cal && !cal.errors) ocupados.push(...(cal.busy || []).map(b => [DateTime.fromISO(b.start).toMillis(), DateTime.fromISO(b.end).toMillis()]));\n}\n\nconst dur = esc.duracao_reuniao_min, folga = esc.intervalo_entre_reunioes_min * 60000;\nconst nomesDia = [null, 'seg', 'ter', 'qua', 'qui', 'sex', 'sab', 'dom'];\nconst agora = DateTime.now().setZone(TZ);\nconst minimo = agora.plus({ hours: esc.antecedencia_minima_horas });\nconst limite = agora.startOf('day').plus({ days: esc.dias_para_frente });\nlet dia = pedido.data_inicial ? DateTime.fromISO(pedido.data_inicial, { zone: TZ }).startOf('day') : agora.startOf('day');\nif (!dia.isValid || dia < agora.startOf('day')) dia = agora.startOf('day');\nconst periodo = String(pedido.periodo || '').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');\n\nconst livres = [];\nfor (; dia <= limite && livres.length < 60; dia = dia.plus({ days: 1 })) {\n  let faixas = esc.horario_atendimento?.[nomesDia[dia.weekday]] || [];\n  if (faixas.length && !Array.isArray(faixas[0])) faixas = [faixas];\n  for (const [ini, fim] of faixas) {\n    const [hi, mi] = ini.split(':').map(Number), [hf, mf] = fim.split(':').map(Number);\n    const fimFaixa = dia.set({ hour: hf, minute: mf });\n    for (let s = dia.set({ hour: hi, minute: mi }); s.plus({ minutes: dur }) <= fimFaixa; s = s.plus({ minutes: 30 })) {\n      const f = s.plus({ minutes: dur });\n      const okPeriodo = !periodo || periodo === 'qualquer' || (periodo.startsWith('manh') && s.hour < 12) || (periodo === 'tarde' && s.hour >= 12 && s.hour < 18) || (periodo === 'noite' && s.hour >= 18);\n      const conflito = ocupados.some(([oi, of]) => s.toMillis() < of + folga && f.toMillis() + folga > oi);\n      if (s >= minimo && okPeriodo && !conflito) livres.push(s);\n    }\n  }\n}\n\nif (!livres.length) {\n  return [{ json: { resposta: `Não há horários livres com ${resp.nome} nesse período (próximos ${esc.dias_para_frente} dias). Pergunte se o cliente aceita outro período ou ofereça transferir_para_humano.` } }];\n}\n\n// até 6 opções espalhadas: no máximo 2 por dia, em até 3 dias diferentes\nconst porDia = {};\nfor (const s of livres) (porDia[s.toISODate()] ||= []).push(s);\nconst opcoes = [];\nfor (const lista of Object.values(porDia).slice(0, 3)) {\n  opcoes.push(lista[0]);\n  const outra = lista.find(s => Math.abs(s.hour - lista[0].hour) >= 3) || lista[1];\n  if (outra) opcoes.push(outra);\n}\nconst linhas = opcoes.map(s => `- ${s.setLocale('pt-BR').toFormat(\"cccc, dd/MM 'às' HH:mm\")} -> inicio=${s.toISO({ suppressMilliseconds: true })}`);\nreturn [{ json: {\n  resposta: `Horários livres com ${resp.nome} (reunião de ${dur} minutos):\\n${linhas.join('\\n')}\\nresponsavel_id=${resp.id}\\nOfereça 2 ou 3 destas opções ao cliente, de forma natural (não mostre os valores inicio/responsavel_id).`,\n}}];"
+      },
+      "id": "5e38ab15-fe0c-5b48-b427-e28b94c6e3f1",
+      "name": "Calcular horários livres",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Chamado pela IA": {
+      "main": [
+        [
+          {
+            "node": "Dados da agenda",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dados da agenda": {
+      "main": [
+        [
+          {
+            "node": "Tem Google Agenda?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tem Google Agenda?": {
+      "main": [
+        [
+          {
+            "node": "Google Agenda: ocupado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Calcular horários livres",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Agenda: ocupado": {
+      "main": [
+        [
+          {
+            "node": "Calcular horários livres",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "ajAlertaErros001"
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

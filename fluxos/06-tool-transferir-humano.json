@@ -1,0 +1,305 @@
+{
+  "id": "ajToolTransferir",
+  "name": "Assistente Jurídico | Tool - Transferir para humano",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "escritorio_id"
+            },
+            {
+              "name": "lead_id"
+            },
+            {
+              "name": "motivo"
+            },
+            {
+              "name": "resumo"
+            },
+            {
+              "name": "urgencia"
+            },
+            {
+              "name": "area"
+            }
+          ]
+        }
+      },
+      "id": "8e28d56b-180a-5dc6-893c-dc647d5e6a40",
+      "name": "Chamado pela IA",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Escolhe quem atende (área, urgência, quem já acompanha o cliente), registra e pausa a IA.\nWITH p AS (\n  SELECT $1::uuid AS esc, $2::uuid AS lead, NULLIF(trim($3), '') AS motivo, NULLIF(trim($4), '') AS resumo,\n         CASE WHEN lower($5) IN ('baixa','media','alta') THEN lower($5) ELSE 'media' END AS urgencia,\n         NULLIF(lower(trim($6)), '') AS area),\nr AS (SELECT * FROM responsaveis WHERE id = escolher_responsavel(\n        (SELECT esc FROM p), (SELECT lead FROM p),\n        COALESCE((SELECT area FROM p), (SELECT area FROM leads WHERE id = (SELECT lead FROM p))),\n        (SELECT urgencia FROM p) = 'alta', false)),\nenc AS (\n  INSERT INTO encaminhamentos (escritorio_id, lead_id, responsavel_id, motivo, resumo, urgencia)\n  SELECT p.esc, p.lead, (SELECT id FROM r), COALESCE(p.motivo, 'Solicitação de atendimento humano'), p.resumo, p.urgencia FROM p\n  RETURNING id),\nupd AS (\n  UPDATE leads l SET status = 'humano',\n         ia_pausada_ate = now() + make_interval(hours => e.horas_pausa_ia),\n         responsavel_id = COALESCE((SELECT id FROM r WHERE faz_reunioes), l.responsavel_id),\n         urgencia = (SELECT urgencia FROM p), atualizado_em = now()\n  FROM escritorios e WHERE e.id = l.escritorio_id AND l.id = (SELECT lead FROM p) AND l.escritorio_id = (SELECT esc FROM p)\n  RETURNING l.*)\nSELECT (SELECT id FROM enc) AS encaminhamento_id, to_jsonb(r) AS responsavel, to_jsonb(upd) AS lead, to_jsonb(e) AS escritorio,\n       p.motivo, p.resumo, p.urgencia, p.area,\n       COALESCE((SELECT string_agg(x.linha, E'\\n') FROM (\n          SELECT CASE m.papel WHEN 'cliente' THEN '👤 ' ELSE '🤖 ' END || left(m.conteudo, 300) AS linha\n          FROM mensagens m WHERE m.lead_id = p.lead AND m.papel IN ('cliente','assistente')\n          ORDER BY m.id DESC LIMIT 6) x), '') AS ultimas_mensagens\nFROM p JOIN upd ON true JOIN escritorios e ON e.id = p.esc LEFT JOIN r ON true;",
+        "options": {
+          "queryReplacement": "={{ [$json.escritorio_id, $json.lead_id, $json.motivo ?? '', $json.resumo ?? '', $json.urgencia ?? '', $json.area ?? ''] }}"
+        }
+      },
+      "id": "b83bb109-1239-5a3d-b454-45e36cb38afe",
+      "name": "Escolher responsável",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ajCredPostgres01",
+          "name": "Postgres - Agente"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "const TZ = 'America/Sao_Paulo';\nconst fmtFone = (n) => { const d = String(n || '').replace(/\\D/g, ''); if (d.length >= 12 && d.startsWith('55')) { const r = d.slice(2); return `+55 (${r.slice(0,2)}) ${r.slice(2, r.length-4)}-${r.slice(-4)}`; } return '+' + d; };\nconst fmtData = (iso) => DateTime.fromISO(String(iso), { zone: TZ }).setZone(TZ).setLocale('pt-BR').toFormat(\"cccc, dd/MM/yyyy 'às' HH:mm\");\n\nconst d = $input.first().json;\nif (!d.responsavel) return [{ json: { sem_responsavel: true, resposta: 'Não há ninguém da equipe cadastrado para receber o atendimento. Informe ao cliente que a equipe retornará pelo telefone ' + (d.escritorio?.telefone || 'do escritório') + '.' } }];\nconst r = d.responsavel, l = d.lead, e = d.escritorio;\nconst nome = l.nome || l.nome_whatsapp || 'Cliente';\nconst icone = { alta: '🔴 ALTA', media: '🟡 média', baixa: '🟢 baixa' }[d.urgencia] || d.urgencia;\nconst ultimas = d.ultimas_mensagens ? d.ultimas_mensagens.split('\\n').reverse().join('\\n') : '';\nconst texto = [\n  `🔔 *Atendimento encaminhado para você*`, `*Urgência:* ${icone}`, '',\n  `*Cliente:* ${nome}${l.ja_e_cliente ? ' (já é cliente)' : ''}`,\n  `*WhatsApp:* ${fmtFone(l.whatsapp)} (wa.me/${l.whatsapp})`,\n  `*Área:* ${d.area || l.area || '-'}`,\n  `*Motivo:* ${d.motivo || '-'}`,\n  `*Resumo:* ${d.resumo || l.resumo_caso || '-'}`,\n  ...(ultimas ? ['', '*Últimas mensagens:*', ultimas] : []), '',\n  `_A assistente virtual foi pausada nesta conversa por ${e.horas_pausa_ia}h. Responda o cliente pelo WhatsApp do escritório ou pelo Chatwoot. Para reativar a IA antes, envie #ia na conversa ou resolva a conversa no Chatwoot._`,\n].join('\\n');\n\n// dentro do horário de atendimento?\nconst agora = DateTime.now().setZone(TZ);\nconst nomesDia = [null, 'seg', 'ter', 'qua', 'qui', 'sex', 'sab', 'dom'];\nlet faixas = e.horario_atendimento?.[nomesDia[agora.weekday]] || [];\nif (faixas.length && !Array.isArray(faixas[0])) faixas = [faixas];\nconst hhmm = agora.toFormat('HH:mm');\nconst noHorario = faixas.some(([a, b]) => hhmm >= a && hhmm < b);\nconst primeiroNome = r.nome;\nconst resposta = noHorario || d.urgencia === 'alta'\n  ? `Encaminhado para ${primeiroNome}, que já recebeu o contato e o resumo e vai responder por aqui em breve. Avise o cliente.`\n  : `Encaminhado para ${primeiroNome}. Agora está fora do horário de atendimento da equipe; avise o cliente que o retorno será no próximo horário de atendimento.`;\nreturn [{ json: {\n  instancia: e.instancia_whatsapp, numero: r.whatsapp, texto, encaminhamento_id: d.encaminhamento_id,\n  contato: { fullName: nome, wuid: l.whatsapp, phoneNumber: '+' + l.whatsapp }, resposta,\n}}];"
+      },
+      "id": "a18692c1-adf9-5cc4-af9e-bbcc94ae5fe8",
+      "name": "Montar aviso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c0",
+              "leftValue": "={{ $json.sem_responsavel }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "38c398f9-5401-5fc2-8f8e-54e53b104137",
+      "name": "Sem responsável?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ \"http://evolution:8080\" + \"/message/sendText/\" + encodeURIComponent($json.instancia) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $json.numero, text: $json.texto }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "c267377f-fea1-52b8-be33-0d0585d70549",
+      "name": "Enviar resumo ao responsável",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        380
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ajCredEvolution1",
+          "name": "Evolution API"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ \"http://evolution:8080\" + \"/message/sendContact/\" + encodeURIComponent($('Montar aviso').first().json.instancia) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $('Montar aviso').first().json.numero, contact: [$('Montar aviso').first().json.contato] }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "5f4bcc13-d18b-59cb-9be8-b4f1a33ba546",
+      "name": "Enviar contato do cliente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        380
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ajCredEvolution1",
+          "name": "Evolution API"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE encaminhamentos SET notificado = $2::boolean WHERE id = $1::uuid RETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$('Montar aviso').first().json.encaminhamento_id, String(!!$('Enviar resumo ao responsável').first().json.key)] }}"
+        }
+      },
+      "id": "1819793b-964d-5dda-be77-c05d7377c325",
+      "name": "Marcar como notificado",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1320,
+        380
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ajCredPostgres01",
+          "name": "Postgres - Agente"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { resposta: $('Montar aviso').first().json.resposta } }];"
+      },
+      "id": "9e2f44fe-2433-592b-ae0e-2c8cdbc32069",
+      "name": "Resposta para a IA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Chamado pela IA": {
+      "main": [
+        [
+          {
+            "node": "Escolher responsável",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escolher responsável": {
+      "main": [
+        [
+          {
+            "node": "Montar aviso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar aviso": {
+      "main": [
+        [
+          {
+            "node": "Sem responsável?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sem responsável?": {
+      "main": [
+        [
+          {
+            "node": "Resposta para a IA",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Enviar resumo ao responsável",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar resumo ao responsável": {
+      "main": [
+        [
+          {
+            "node": "Enviar contato do cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar contato do cliente": {
+      "main": [
+        [
+          {
+            "node": "Marcar como notificado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Marcar como notificado": {
+      "main": [
+        [
+          {
+            "node": "Resposta para a IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "ajAlertaErros001"
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

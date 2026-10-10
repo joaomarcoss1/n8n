@@ -1,0 +1,653 @@
+{
+  "id": "ajToolAgendar001",
+  "name": "Assistente Jurídico | Tool - Agendar reunião",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "workflowInputs",
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "escritorio_id"
+            },
+            {
+              "name": "lead_id"
+            },
+            {
+              "name": "inicio"
+            },
+            {
+              "name": "modalidade"
+            },
+            {
+              "name": "area"
+            },
+            {
+              "name": "resumo_caso"
+            },
+            {
+              "name": "nome_cliente"
+            },
+            {
+              "name": "email_cliente"
+            },
+            {
+              "name": "responsavel_id"
+            }
+          ]
+        }
+      },
+      "id": "80ed65c7-a136-54a0-bd75-d2352ec7758b",
+      "name": "Chamado pela IA",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH p AS (SELECT $1::uuid AS esc, $2::uuid AS lead, NULLIF(lower($3), '') AS area, NULLIF($4, '') AS resp_txt),\n-- usa o responsável indicado pela consulta de horários, se for válido; senão escolhe de novo\nr AS (\n  SELECT * FROM responsaveis\n  WHERE escritorio_id = (SELECT esc FROM p) AND ativo AND faz_reunioes\n    AND id::text = COALESCE((SELECT resp_txt FROM p),\n                            escolher_responsavel((SELECT esc FROM p), (SELECT lead FROM p), (SELECT area FROM p), false, true)::text)\n  UNION ALL\n  SELECT * FROM responsaveis WHERE id = escolher_responsavel((SELECT esc FROM p), (SELECT lead FROM p), (SELECT area FROM p), false, true)\n  LIMIT 1)\nSELECT to_jsonb(e) AS escritorio, to_jsonb(r) AS responsavel, to_jsonb(l) AS lead,\n       COALESCE(r.google_calendar_id, e.google_calendar_id, '') AS calendar_id\nFROM escritorios e JOIN leads l ON l.escritorio_id = e.id AND l.id = (SELECT lead FROM p)\nLEFT JOIN r ON true\nWHERE e.id = (SELECT esc FROM p);",
+        "options": {
+          "queryReplacement": "={{ [$json.escritorio_id, $json.lead_id, $json.area ?? '', $json.responsavel_id ?? ''] }}"
+        }
+      },
+      "id": "a48140a9-e3c7-5044-92dc-40f320a90f6f",
+      "name": "Dados para agendar",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ajCredPostgres01",
+          "name": "Postgres - Agente"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const TZ = 'America/Sao_Paulo';\nconst fmtFone = (n) => { const d = String(n || '').replace(/\\D/g, ''); if (d.length >= 12 && d.startsWith('55')) { const r = d.slice(2); return `+55 (${r.slice(0,2)}) ${r.slice(2, r.length-4)}-${r.slice(-4)}`; } return '+' + d; };\nconst fmtData = (iso) => DateTime.fromISO(String(iso), { zone: TZ }).setZone(TZ).setLocale('pt-BR').toFormat(\"cccc, dd/MM/yyyy 'às' HH:mm\");\n\nconst d = $input.first().json;\nconst pedido = $('Chamado pela IA').first().json;\nconst esc = d.escritorio, resp = d.responsavel;\nconst erro = (msg) => [{ json: { ok: false, resposta: msg } }];\nif (!esc || !d.lead) return erro('Cadastro do cliente não encontrado. Use transferir_para_humano.');\nif (!resp) return erro('Não há advogado disponível para reuniões. Use transferir_para_humano.');\n\nconst inicio = DateTime.fromISO(String(pedido.inicio || ''), { setZone: true }).setZone(TZ);\nif (!inicio.isValid) return erro('Horário inválido. Use consultar_horarios e passe o valor \"inicio\" exatamente como retornado.');\nif (inicio < DateTime.now().plus({ hours: esc.antecedencia_minima_horas }))\n  return erro(`Esse horário é muito próximo ou já passou (antecedência mínima de ${esc.antecedencia_minima_horas}h). Consulte os horários de novo.`);\n\nconst nomesDia = [null, 'seg', 'ter', 'qua', 'qui', 'sex', 'sab', 'dom'];\nlet faixas = esc.horario_atendimento?.[nomesDia[inicio.weekday]] || [];\nif (faixas.length && !Array.isArray(faixas[0])) faixas = [faixas];\nconst fim = inicio.plus({ minutes: esc.duracao_reuniao_min });\nconst dentro = faixas.some(([a, b]) => {\n  const [ha, ma] = a.split(':').map(Number), [hb, mb] = b.split(':').map(Number);\n  return inicio >= inicio.set({ hour: ha, minute: ma, second: 0 }) && fim <= inicio.set({ hour: hb, minute: mb, second: 0 });\n});\nif (!dentro) return erro('Esse horário está fora do expediente. Use consultar_horarios para ver as opções.');\n\nconst modalidade = ['presencial', 'online', 'telefone'].includes(String(pedido.modalidade).toLowerCase()) ? String(pedido.modalidade).toLowerCase() : 'presencial';\nreturn [{ json: {\n  ok: true, inicio: inicio.toISO(), fim: fim.toISO(), modalidade,\n  area: (pedido.area || d.lead.area || '').toLowerCase() || null,\n  resumo: pedido.resumo_caso || d.lead.resumo_caso || '',\n  nome: pedido.nome_cliente || d.lead.nome || d.lead.nome_whatsapp || 'Cliente',\n  email: /\\S+@\\S+\\.\\S+/.test(pedido.email_cliente || '') ? pedido.email_cliente : (d.lead.email || ''),\n  calendar_id: d.calendar_id, escritorio: esc, responsavel: resp, lead: d.lead,\n}}];"
+      },
+      "id": "75e09e6a-87b0-5532-82f3-4b7898a0c3a4",
+      "name": "Validar horário",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c0",
+              "leftValue": "={{ $json.ok }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "82bc96ab-ac95-5e6a-b8e5-0fab11fdf283",
+      "name": "Horário válido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://www.googleapis.com/calendar/v3/freeBusy",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ timeMin: $json.inicio, timeMax: $json.fim, timeZone: 'America/Sao_Paulo', items: [{ id: $json.calendar_id }] }) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "01cc7229-82e0-54bd-8e0a-ba4d441669ae",
+      "name": "Google: horário livre?",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        990,
+        120
+      ],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "ajCredGoogleCal1",
+          "name": "Google Agenda"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- A constraint \"agendamentos_sem_conflito\" impede choque de horário mesmo com dois clientes ao mesmo tempo.\nINSERT INTO agendamentos (escritorio_id, lead_id, responsavel_id, inicio, fim, modalidade, area, resumo, google_calendar_id)\nSELECT $1::uuid, $2::uuid, $3::uuid, $4::timestamptz, $5::timestamptz, $6, NULLIF($7, ''), NULLIF($8, ''), NULLIF($9, '')\nWHERE NOT $10::boolean\nON CONFLICT DO NOTHING\nRETURNING id;",
+        "options": {
+          "queryReplacement": "={{ [$('Validar horário').first().json.escritorio.id, $('Validar horário').first().json.lead.id, $('Validar horário').first().json.responsavel.id, $('Validar horário').first().json.inicio, $('Validar horário').first().json.fim, $('Validar horário').first().json.modalidade, $('Validar horário').first().json.area ?? '', $('Validar horário').first().json.resumo, $('Validar horário').first().json.calendar_id, String(!!(($json.calendars && Object.values($json.calendars)[0]?.busy?.length)))] }}"
+        }
+      },
+      "id": "1a052767-51a5-5c09-a26c-4514199dad41",
+      "name": "Gravar agendamento",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1100,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ajCredPostgres01",
+          "name": "Postgres - Agente"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c0",
+              "leftValue": "={{ $json.id }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3917d2f9-68b1-560d-aad0-f0a920e81f33",
+      "name": "Conseguiu reservar?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1320,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const v = $('Validar horário').first().json;\nconst agendamentoId = $('Gravar agendamento').first().json.id;\nconst convidados = [v.responsavel.email, v.email].filter(m => m && m !== v.calendar_id).map(email => ({ email }));\nconst evento = {\n  summary: `Reunião: ${v.nome}${v.area ? ' (' + v.area + ')' : ''}`,\n  description: `Cliente: ${v.nome}\\nWhatsApp: +${v.lead.whatsapp}\\nModalidade: ${v.modalidade}\\nÁrea: ${v.area || '-'}\\n\\nResumo: ${v.resumo || '-'}\\n\\nAgendado pelo assistente virtual.`,\n  start: { dateTime: v.inicio, timeZone: 'America/Sao_Paulo' },\n  end: { dateTime: v.fim, timeZone: 'America/Sao_Paulo' },\n  attendees: convidados,\n  location: v.modalidade === 'presencial' ? (v.escritorio.endereco || '') : '',\n  extendedProperties: { private: { agendamento_id: agendamentoId } },\n};\nif (v.modalidade === 'online') evento.conferenceData = { createRequest: { requestId: agendamentoId, conferenceSolutionKey: { type: 'hangoutsMeet' } } };\nreturn [{ json: { calendar_id: v.calendar_id, evento } }];"
+      },
+      "id": "74131327-7b39-5553-82ce-539f0ee125da",
+      "name": "Montar evento",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ 'https://www.googleapis.com/calendar/v3/calendars/' + encodeURIComponent($json.calendar_id) + '/events?conferenceDataVersion=1&sendUpdates=all' }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleCalendarOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.evento) }}",
+        "options": {
+          "timeout": 20000
+        }
+      },
+      "id": "b13a6e97-5187-5f40-8c74-0f2b8545433d",
+      "name": "Criar evento no Google",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1860,
+        160
+      ],
+      "credentials": {
+        "googleCalendarOAuth2Api": {
+          "id": "ajCredGoogleCal1",
+          "name": "Google Agenda"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c0",
+              "leftValue": "={{ $('Validar horário').first().json.calendar_id }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "53fa2783-bbfa-5602-9c92-2a9996787bbe",
+      "name": "Tem agenda Google?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH a AS (\n  UPDATE agendamentos SET google_event_id = NULLIF($2, ''), link_reuniao = NULLIF($3, ''), atualizado_em = now()\n  WHERE id = $1::uuid RETURNING *)\nUPDATE leads l SET status = 'agendado', responsavel_id = a.responsavel_id,\n       nome = COALESCE(NULLIF($4, ''), l.nome), email = COALESCE(NULLIF($5, ''), l.email),\n       area = COALESCE(a.area, l.area), resumo_caso = COALESCE(a.resumo, l.resumo_caso), atualizado_em = now()\nFROM a WHERE l.id = a.lead_id\nRETURNING a.id AS agendamento_id, a.link_reuniao;",
+        "options": {
+          "queryReplacement": "={{ [$('Gravar agendamento').first().json.id, $json.id ?? '', $json.hangoutLink ?? '', $('Validar horário').first().json.nome, $('Validar horário').first().json.email] }}"
+        }
+      },
+      "id": "430cf1e0-3dec-5b0c-987a-a7238726a905",
+      "name": "Finalizar agendamento",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        1980,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ajCredPostgres01",
+          "name": "Postgres - Agente"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const TZ = 'America/Sao_Paulo';\nconst fmtFone = (n) => { const d = String(n || '').replace(/\\D/g, ''); if (d.length >= 12 && d.startsWith('55')) { const r = d.slice(2); return `+55 (${r.slice(0,2)}) ${r.slice(2, r.length-4)}-${r.slice(-4)}`; } return '+' + d; };\nconst fmtData = (iso) => DateTime.fromISO(String(iso), { zone: TZ }).setZone(TZ).setLocale('pt-BR').toFormat(\"cccc, dd/MM/yyyy 'às' HH:mm\");\n\nconst v = $('Validar horário').first().json;\nconst fin = $input.first().json;\nconst link = fin.link_reuniao;\nconst texto = [\n  '📅 *Nova reunião agendada*', '',\n  `*Cliente:* ${v.nome}`,\n  `*WhatsApp:* ${fmtFone(v.lead.whatsapp)} (wa.me/${v.lead.whatsapp})`,\n  `*Quando:* ${fmtData(v.inicio)}`,\n  `*Modalidade:* ${v.modalidade}${link ? ' - ' + link : ''}`,\n  `*Área:* ${v.area || '-'}`,\n  `*Resumo:* ${v.resumo || '-'}`, '',\n  '_Agendado automaticamente pelo assistente virtual._',\n].join('\\n');\nconst local = v.modalidade === 'presencial' ? `no endereço ${v.escritorio.endereco}`\n  : v.modalidade === 'online' ? (link ? `online, pelo link ${link}` : 'online; o link será enviado pela equipe antes da reunião')\n  : 'por telefone; o advogado vai ligar para este número';\nreturn [{ json: {\n  instancia: v.escritorio.instancia_whatsapp, numero_advogado: v.responsavel.whatsapp, texto,\n  contato: { fullName: v.nome, wuid: v.lead.whatsapp, phoneNumber: '+' + v.lead.whatsapp },\n  resposta: `Reunião AGENDADA com sucesso: ${fmtData(v.inicio)}, com ${v.responsavel.nome}, ${local}. Duração: ${v.escritorio.duracao_reuniao_min} minutos. Confirme ao cliente e lembre os documentos que ele deve levar.`,\n}}];"
+      },
+      "id": "74ec50c3-68b0-5fc8-b81f-1c02375f0812",
+      "name": "Mensagem para o advogado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2200,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ \"http://evolution:8080\" + \"/message/sendText/\" + encodeURIComponent($json.instancia) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $json.numero_advogado, text: $json.texto }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "3941d27e-64f3-5469-b1eb-58356eac87bc",
+      "name": "Avisar advogado",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2420,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ajCredEvolution1",
+          "name": "Evolution API"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ \"http://evolution:8080\" + \"/message/sendContact/\" + encodeURIComponent($('Mensagem para o advogado').first().json.instancia) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $('Mensagem para o advogado').first().json.numero_advogado, contact: [$('Mensagem para o advogado').first().json.contato] }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "194b4123-60c1-5637-9e46-f8001fe271d8",
+      "name": "Enviar contato do cliente",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2640,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ajCredEvolution1",
+          "name": "Evolution API"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { resposta: $('Mensagem para o advogado').first().json.resposta } }];"
+      },
+      "id": "5b3c4d5f-f9c8-5fcf-b8fe-c969a8459f3d",
+      "name": "Resposta para a IA",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2860,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { resposta: 'Esse horário acabou de ser ocupado. Use consultar_horarios novamente e ofereça outras opções ao cliente, pedindo desculpas.' } }];"
+      },
+      "id": "e028eb35-f248-53bc-a55a-cc9f6543db45",
+      "name": "Horário indisponível",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1540,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { resposta: $('Validar horário').first().json.resposta } }];"
+      },
+      "id": "d8df94bc-6fa0-5297-94cb-c4d3fc213484",
+      "name": "Resposta: erro de validação",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c0",
+              "leftValue": "={{ $json.calendar_id }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "840139cc-ec0a-5d62-8831-3b97e3fbb4a2",
+      "name": "Checar Google?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        770,
+        160
+      ]
+    }
+  ],
+  "connections": {
+    "Chamado pela IA": {
+      "main": [
+        [
+          {
+            "node": "Dados para agendar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dados para agendar": {
+      "main": [
+        [
+          {
+            "node": "Validar horário",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar horário": {
+      "main": [
+        [
+          {
+            "node": "Horário válido?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Horário válido?": {
+      "main": [
+        [
+          {
+            "node": "Checar Google?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resposta: erro de validação",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Checar Google?": {
+      "main": [
+        [
+          {
+            "node": "Google: horário livre?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Gravar agendamento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google: horário livre?": {
+      "main": [
+        [
+          {
+            "node": "Gravar agendamento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gravar agendamento": {
+      "main": [
+        [
+          {
+            "node": "Conseguiu reservar?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conseguiu reservar?": {
+      "main": [
+        [
+          {
+            "node": "Tem agenda Google?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Horário indisponível",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tem agenda Google?": {
+      "main": [
+        [
+          {
+            "node": "Montar evento",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Finalizar agendamento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar evento": {
+      "main": [
+        [
+          {
+            "node": "Criar evento no Google",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Criar evento no Google": {
+      "main": [
+        [
+          {
+            "node": "Finalizar agendamento",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Finalizar agendamento": {
+      "main": [
+        [
+          {
+            "node": "Mensagem para o advogado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mensagem para o advogado": {
+      "main": [
+        [
+          {
+            "node": "Avisar advogado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Avisar advogado": {
+      "main": [
+        [
+          {
+            "node": "Enviar contato do cliente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar contato do cliente": {
+      "main": [
+        [
+          {
+            "node": "Resposta para a IA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "ajAlertaErros001"
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

@@ -1,0 +1,178 @@
+{
+  "id": "ajAlertaErros001",
+  "name": "Assistente Jurídico | 0. Alerta de erros",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "4ce48cb4-0e30-5488-932c-522b3e55856f",
+      "name": "Quando um fluxo falhar",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT max(valor) FILTER (WHERE chave = 'admin_whatsapp') AS numero,\n       max(valor) FILTER (WHERE chave = 'instancia_alertas') AS instancia\nFROM config_sistema;",
+        "options": {}
+      },
+      "id": "c13b4ffb-6ad7-5f2a-b944-e8ff1aa1cdbc",
+      "name": "Para quem avisar",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        220,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "ajCredPostgres01",
+          "name": "Postgres - Agente"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c0",
+              "leftValue": "={{ $json.numero }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.instancia }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "82ba2418-085b-5b3d-90b5-89f9d14fb394",
+      "name": "Configurado?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const e = $('Quando um fluxo falhar').first().json;\nconst cfg = $input.first().json;\nconst texto = [\n  '⚠️ *Erro no assistente jurídico*', '',\n  `*Fluxo:* ${e.workflow?.name || '-'}`,\n  `*Etapa:* ${e.execution?.lastNodeExecuted || '-'}`,\n  `*Erro:* ${String(e.execution?.error?.message || '-').slice(0, 400)}`,\n  `*Execução:* ${e.execution?.url || '-'}`,\n].join('\\n');\nreturn [{ json: { instancia: cfg.instancia, numero: cfg.numero, texto } }];"
+      },
+      "id": "b5557906-c3e4-52e9-9b41-61426a7f7abe",
+      "name": "Montar alerta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ \"http://evolution:8080\" + \"/message/sendText/\" + encodeURIComponent($json.instancia) }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ number: $json.numero, text: $json.texto }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "e7bec286-ccad-584c-bcc4-f498a03f94ce",
+      "name": "Avisar administrador",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        880,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ajCredEvolution1",
+          "name": "Evolution API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Quando um fluxo falhar": {
+      "main": [
+        [
+          {
+            "node": "Para quem avisar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Para quem avisar": {
+      "main": [
+        [
+          {
+            "node": "Configurado?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Configurado?": {
+      "main": [
+        [
+          {
+            "node": "Montar alerta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar alerta": {
+      "main": [
+        [
+          {
+            "node": "Avisar administrador",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}
