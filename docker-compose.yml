@@ -1,5 +1,6 @@
 # Assistente Jurídico 24h
 # n8n (orquestração + IA) · Evolution API (WhatsApp) · Chatwoot (atendimento humano)
+# Painel web do escritório
 # Postgres + pgvector · Redis · Caddy (HTTPS automático)
 #
 # Uso: sudo ./install.sh seudominio.com.br voce@email.com
@@ -31,10 +32,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: postgres
+      PAINEL_DB_PASSWORD: ${PAINEL_DB_PASSWORD}
       TZ: ${TZ:-America/Sao_Paulo}
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/00-databases.sh:/docker-entrypoint-initdb.d/00-databases.sh:ro
+      - ./postgres/painel-db-role.sh:/usr/local/bin/painel-db-role.sh:ro
       - ./postgres/agente-schema.sql:/schemas/agente-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d postgres"]
@@ -155,6 +158,30 @@ services:
       redis:
         condition: service_healthy
 
+  painel:
+    build: ./painel
+    image: assistente-juridico/painel:local
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://painel:${PAINEL_DB_PASSWORD}@postgres:5432/agente
+      EVOLUTION_URL: http://evolution:8080
+      EVOLUTION_API_KEY: ${EVOLUTION_API_KEY}
+      N8N_URL: http://n8n:5678
+      PAINEL_N8N_SECRET: ${PAINEL_N8N_SECRET}
+      COOKIE_SECURE: ${PAINEL_COOKIE_SECURE:-true}
+      SESSAO_HORAS: "12"
+      TZ: ${TZ:-America/Sao_Paulo}
+    # endurecimento: sistema de arquivos só leitura, sem privilégios extras
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   caddy:
     image: caddy:${CADDY_IMAGE_TAG:-2-alpine}
     restart: unless-stopped
@@ -168,6 +195,7 @@ services:
       N8N_SUBDOMAIN: ${N8N_SUBDOMAIN}
       EVOLUTION_SUBDOMAIN: ${EVOLUTION_SUBDOMAIN}
       CHATWOOT_SUBDOMAIN: ${CHATWOOT_SUBDOMAIN}
+      PAINEL_SUBDOMAIN: ${PAINEL_SUBDOMAIN:-painel}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
@@ -176,6 +204,7 @@ services:
       - n8n
       - evolution
       - chatwoot-rails
+      - painel
 
 volumes:
   postgres_data:

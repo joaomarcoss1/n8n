@@ -1,0 +1,214 @@
+{
+  "id": "ajAcoesPainel001",
+  "name": "Assistente Jurídico | 4. Ações do painel",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "painel-acao",
+        "authentication": "headerAuth",
+        "responseMode": "lastNode",
+        "responseData": "firstEntryJson",
+        "options": {}
+      },
+      "id": "be914663-99b9-536c-a282-3dfb46222fa1",
+      "name": "Pedido do painel",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        300
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "ajCredPainelHook",
+          "name": "Painel -> n8n (token)"
+        }
+      },
+      "webhookId": "aj-painel-acao",
+      "notes": "Só aceita chamadas com o cabeçalho x-painel-token (segredo PAINEL_N8N_SECRET do .env)."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c0",
+              "leftValue": "={{ $json.body.acao }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "cancelar"
+            },
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.body.agendamento_id }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b89c6ec7-5f2d-5f98-841a-9549fb9e5b82",
+      "name": "Ação permitida?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "ajToolGerenciar1",
+          "mode": "list",
+          "cachedResultName": "Assistente Jurídico | Tool - Gerenciar agendamento"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "escritorio_id": "={{ $json.body.escritorio_id }}",
+            "lead_id": "={{ $json.body.lead_id }}",
+            "acao": "cancelar",
+            "agendamento_id": "={{ $json.body.agendamento_id }}",
+            "novo_inicio": ""
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "escritorio_id",
+              "displayName": "escritorio_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "acao",
+              "displayName": "acao",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "agendamento_id",
+              "displayName": "agendamento_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            },
+            {
+              "id": "novo_inicio",
+              "displayName": "novo_inicio",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "canBeUsedToMatch": true,
+              "type": "string",
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "id": "9ff874e2-db41-5b16-9471-5f57d3f254e3",
+      "name": "Cancelar reunião",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [
+        440,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { resposta: 'Ação não permitida.' } }];"
+      },
+      "id": "8fdc3871-56cb-5abf-8e64-cf3d541b1ac0",
+      "name": "Ação recusada",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Pedido do painel": {
+      "main": [
+        [
+          {
+            "node": "Ação permitida?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ação permitida?": {
+      "main": [
+        [
+          {
+            "node": "Cancelar reunião",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ação recusada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Sao_Paulo",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "ajAlertaErros001"
+  },
+  "active": false,
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true
+  },
+  "tags": []
+}

@@ -10,6 +10,33 @@ Atendimento automático por WhatsApp para escritórios de advocacia. A assistent
 
 Um único servidor atende **vários escritórios** (multi-tenant): cada escritório é um número de WhatsApp.
 
+## Painel do escritório
+
+Cada escritório tem um painel web (`https://painel.SEUDOMINIO`) para a equipe acompanhar e configurar tudo, sem mexer em código:
+
+| Tela | O que faz |
+|---|---|
+| **Visão geral** | Conversas do dia, reuniões da semana, casos encaminhados que precisam de atenção |
+| **Conversas** | Histórico completo de cada cliente; responder pelo painel (sai pelo WhatsApp do escritório); pausar ou reativar a IA; editar dados do cliente |
+| **Agenda** | Reuniões por advogado; confirmar, marcar realizada/falta, cancelar (remove do Google Agenda e avisa o advogado) |
+| **Equipe** | Advogados e responsáveis: áreas, urgências, responsável padrão, agenda Google |
+| **Configurar atendimento** | Dados do escritório, horários de reunião, regras da agenda, tom de voz, valor da consulta, perguntas frequentes |
+| **WhatsApp** | Conectar o número pelo QR Code e ver o status |
+| **Usuários** | Acessos da equipe (gestor ou atendente) e registro de atividades |
+| **Escritórios** | Só para você (administrador geral): cadastrar e ativar/desativar clientes |
+
+![Visão geral](docs/imagens/painel-01-visao-geral.png)
+![Conversa](docs/imagens/painel-03-conversa.png)
+
+<details><summary>Mais telas</summary>
+
+![Agenda](docs/imagens/painel-04-agenda.png)
+![Equipe](docs/imagens/painel-05-equipe.png)
+![Configurar atendimento](docs/imagens/painel-06-atendimento.png)
+![WhatsApp](docs/imagens/painel-07-whatsapp-qr.png)
+![Celular](docs/imagens/painel-10-celular.png)
+</details>
+
 ---
 
 ## Como funciona
@@ -87,7 +114,7 @@ Duas reuniões nunca se sobrepõem para o mesmo advogado: uma *constraint* no ba
 ### O que você precisa
 
 1. **VPS Ubuntu 22.04/24.04**, com no mínimo **4 GB de RAM** e 2 vCPU (Hetzner, Contabo, Hostinger etc.).
-2. **Domínio** com 3 registros DNS tipo **A** apontando para o IP do VPS: `n8n`, `api` e `chat`.
+2. **Domínio** com 4 registros DNS tipo **A** apontando para o IP do VPS: `painel`, `n8n`, `api` e `chat`.
 3. **Chave da Anthropic** (Claude): <https://console.anthropic.com>.
 4. Opcional: **chave da OpenAI**, para transcrever áudios.
 5. Opcional: **Google Cloud OAuth**, para o Google Agenda (veja abaixo).
@@ -103,26 +130,20 @@ nano .env        # preencha ANTHROPIC_API_KEY, ADMIN_WHATSAPP e, se quiser, OPEN
 sudo ./install.sh seudominio.com.br voce@seudominio.com.br
 ```
 
-O `install.sh` instala o Docker, configura o firewall, gera as senhas que faltam no `.env`, sobe os serviços (n8n, Evolution API, Chatwoot, Postgres, Redis e Caddy com HTTPS) e **importa e ativa todos os fluxos**, já com as credenciais configuradas.
+O `install.sh` instala o Docker, configura o firewall, gera as senhas que faltam no `.env`, sobe os serviços (painel, n8n, Evolution API, Chatwoot, Postgres, Redis e Caddy com HTTPS), **importa e ativa todos os fluxos** e cria o seu usuário de **administrador do painel**. No final ele mostra o endereço do painel, o seu e-mail e uma **senha provisória**, que você troca no primeiro acesso.
 
 > Se você rodar o `install.sh` sem criar o `.env` antes, ele cria um com senhas aleatórias. Depois, coloque a chave da IA no `.env` e rode `./scripts/importar-fluxos.sh --credenciais`.
 
 ### Cadastrar um escritório
 
-```bash
-./scripts/novo-escritorio.sh silva-advogados "Silva Advogados Associados"
-```
+1. Entre no painel (`https://painel.SEUDOMINIO`) com o usuário de administrador.
+2. **Escritórios → + Novo escritório**: nome, identificador e os dados do gestor do escritório. O painel cria a conexão do WhatsApp já ligada ao n8n e mostra a **senha provisória do gestor**.
+3. **WhatsApp → Gerar QR Code** e leia com o celular do escritório (Configurações → Aparelhos conectados).
+4. Preencha **Configurar atendimento** (endereço, áreas, horários, perguntas frequentes) e **Equipe** (advogados e responsáveis).
 
-Esse comando cria a instância do WhatsApp na Evolution API, já ligada ao n8n (com áudio em base64 para a transcrição), e cadastra o escritório no banco. Depois:
+Pronto: mande uma mensagem para o número do escritório e a assistente responde. Envie ao gestor o endereço do painel, o e-mail e a senha provisória; ele cria os acessos da própria equipe em **Usuários**.
 
-1. **Leia o QR Code**: `https://api.SEUDOMINIO/manager` → entre com a `EVOLUTION_API_KEY` do `.env` → instância → QR Code.
-2. **Complete o cadastro**: endereço, áreas, horário de atendimento, advogados, FAQ. Edite e rode o modelo:
-   ```bash
-   nano postgres/modelo-cadastro-escritorio.sql
-   docker compose exec -T postgres psql -U assistente -d agente < postgres/modelo-cadastro-escritorio.sql
-   ```
-
-Pronto: mande uma mensagem para o número do escritório e a assistente responde.
+> Também dá para fazer pela linha de comando: `./scripts/novo-escritorio.sh` e `./scripts/criar-usuario.sh`.
 
 ### Google Agenda (opcional)
 
@@ -168,6 +189,8 @@ Para atualizar os fluxos depois de mudar os arquivos em `fluxos/`, rode `./scrip
 
 ```bash
 docker compose ps                                   # status
+./scripts/criar-usuario.sh voce@email.com "Seu Nome"  # novo admin / redefinir senha do admin
+docker compose up -d --build painel                  # atualizar o painel depois de um git pull
 docker compose logs -f n8n                          # logs
 ./scripts/importar-fluxos.sh                        # reimportar/atualizar fluxos
 docker compose exec postgres psql -U assistente -d agente     # banco do agente
@@ -189,10 +212,33 @@ FROM encaminhamentos e JOIN leads l ON l.id = e.lead_id LEFT JOIN responsaveis r
 WHERE e.resolvido_em IS NULL ORDER BY e.criado_em DESC;
 ```
 
-## Segurança e boas práticas
+## Segurança
+
+**O que já vem configurado**
+
+- **`.env` protegido**: todas as senhas e chaves ficam só no `.env` do servidor (permissão `600`, só o root lê). Ele está no `.gitignore` e nunca vai para o GitHub. Os fluxos e o código não têm nenhuma senha dentro.
+- **HTTPS em tudo** (Caddy + Let's Encrypt, com HSTS). Banco, Redis e serviços internos não ficam expostos na internet; o firewall só libera SSH, HTTP e HTTPS.
+- **Painel**:
+  - senhas com hash *scrypt* e senha provisória obrigatoriamente trocada no primeiro acesso (mínimo de 10 caracteres, com letras e números);
+  - sessão em cookie `HttpOnly`, `Secure` e `SameSite=Strict`, que expira em 12h; trocar a senha encerra as outras sessões;
+  - proteção contra CSRF em toda alteração e bloqueio após 5 tentativas de login erradas (15 minutos);
+  - política de segurança de conteúdo (CSP) rígida: nada de script de terceiros, e o painel não pode ser embutido em outros sites;
+  - **isolamento entre escritórios**: cada usuário só enxerga os dados do próprio escritório, conferido no servidor em toda consulta;
+  - registro de auditoria (quem fez o quê, quando e de qual IP) em **Usuários → Atividade recente**.
+- **Banco**: o painel usa um usuário próprio (`painel`) que só lê e grava dados do banco `agente`. Ele não consegue apagar tabelas nem acessar os bancos do n8n, da Evolution ou do Chatwoot.
+- **Container do painel** sem root, com sistema de arquivos somente leitura e sem privilégios extras.
+- A IA só altera reuniões e dados **do próprio cliente da conversa**: os IDs do escritório e do cliente são passados pelo fluxo, nunca pela IA.
+
+**O que você deve fazer**
+
+- Deixe o **repositório privado** no GitHub (Settings → General → Danger Zone → Change visibility).
+- Use **chave SSH** para entrar no servidor e desative o login por senha.
+- Faça **backup** do `.env` e do banco (veja *Comandos úteis*) fora do servidor.
+- Fixe versões das imagens no `.env` depois de testar (troque `latest`).
+
+## Boas práticas
 
 - **Fixe versões** em produção: troque `latest` no `.env` pelas versões que você testou.
 - **Backup diário** do Postgres e cópia do `.env` fora do servidor. Sem o `N8N_ENCRYPTION_KEY`, as credenciais do n8n não podem ser recuperadas.
 - **WhatsApp não oficial**: a Evolution conecta pelo WhatsApp Web. Não envie mensagens em massa, porque o número pode ser bloqueado. Para clientes maiores, a Evolution também suporta a **Cloud API oficial da Meta**.
 - **OAB/LGPD**: revise o prompt (nó *Montar prompt*) com cada escritório antes de ativar.
-- A IA só altera reuniões e dados **do próprio cliente da conversa**: os IDs do escritório e do cliente são passados pelo fluxo, nunca pela IA.

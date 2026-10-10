@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 set -a; source .env; set +a
 
 RECRIAR_CREDENCIAIS="${1:-}"
-WORKFLOWS=(ajAlertaErros001 ajToolHorarios01 ajToolAgendar001 ajToolGerenciar1 ajToolRegistrar1 ajToolTransferir ajAtendimento001 ajRotinas0000001 ajRetomarIA00001)
+WORKFLOWS=(ajAlertaErros001 ajToolHorarios01 ajToolAgendar001 ajToolGerenciar1 ajToolRegistrar1 ajToolTransferir ajAtendimento001 ajRotinas0000001 ajRetomarIA00001 ajAcoesPainel001)
 n8n() { docker compose exec -T -u node n8n n8n "$@"; }
 json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 
@@ -35,6 +35,8 @@ adicionar ajCredPostgres01 "Postgres - Agente" postgres \
   "{\"host\":\"postgres\",\"port\":5432,\"database\":\"agente\",\"user\":\"$(json_escape "$POSTGRES_USER")\",\"password\":\"$(json_escape "$POSTGRES_PASSWORD")\",\"ssl\":\"disable\"}"
 adicionar ajCredEvolution1 "Evolution API" httpHeaderAuth \
   "{\"name\":\"apikey\",\"value\":\"$(json_escape "$EVOLUTION_API_KEY")\"}"
+adicionar ajCredPainelHook "Painel -> n8n (token)" httpHeaderAuth \
+  "{\"name\":\"x-painel-token\",\"value\":\"$(json_escape "$PAINEL_N8N_SECRET")\"}"
 adicionar ajCredAnthropic1 "Anthropic" anthropicApi \
   "{\"apiKey\":\"$(json_escape "${ANTHROPIC_API_KEY:-}")\",\"url\":\"$(json_escape "${ANTHROPIC_BASE_URL:-https://api.anthropic.com}")\"}"
 adicionar ajCredOpenAI0001 "OpenAI (transcrição de áudio)" openAiApi \

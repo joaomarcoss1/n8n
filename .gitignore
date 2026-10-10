@@ -1,3 +1,4 @@
 .env
 *.log
 .credenciais-tmp/
+node_modules/

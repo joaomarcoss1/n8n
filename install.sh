@@ -61,12 +61,14 @@ gerar_se_vazio REDIS_PASSWORD 24
 gerar_se_vazio N8N_ENCRYPTION_KEY 32
 gerar_se_vazio EVOLUTION_API_KEY 32
 gerar_se_vazio CHATWOOT_SECRET_KEY_BASE 64
+gerar_se_vazio PAINEL_DB_PASSWORD 24
+gerar_se_vazio PAINEL_N8N_SECRET 32
 set -a; source .env; set +a
 [[ -n "${ANTHROPIC_API_KEY:-}" ]] || echo "⚠️  ANTHROPIC_API_KEY vazia no .env: a IA não vai responder até você preencher e rodar ./scripts/importar-fluxos.sh --credenciais"
 
 # 4. Sobe a stack -------------------------------------------------------------
 log "Baixando imagens"
-docker compose pull
+docker compose pull --ignore-buildable
 
 log "Subindo banco e cache"
 docker compose up -d postgres redis
@@ -75,6 +77,12 @@ until docker compose exec -T postgres pg_isready -U "$POSTGRES_USER" -d agente >
 log "Preparando banco do Chatwoot (pode levar alguns minutos)"
 docker compose run --rm chatwoot-rails bundle exec rails db:chatwoot_prepare
 
+log "Configurando o acesso restrito do painel ao banco"
+docker compose exec -T postgres /usr/local/bin/painel-db-role.sh
+
+log "Construindo o painel web"
+docker compose build painel
+
 log "Subindo todos os serviços"
 mkdir -p .credenciais-tmp
 docker compose up -d
@@ -82,14 +90,26 @@ docker compose up -d
 log "Importando os fluxos do assistente no n8n"
 ./scripts/importar-fluxos.sh
 
+# administrador geral do painel (só na primeira instalação)
+ADMIN_INFO="(já existia; para redefinir: ./scripts/criar-usuario.sh $ACME_EMAIL \"Administrador\")"
+if ! docker compose exec -T postgres psql -U "$POSTGRES_USER" -d agente -tAc \
+     "SELECT 1 FROM painel_usuarios WHERE papel = 'admin_geral' LIMIT 1" | grep -q 1; then
+  log "Criando o administrador do painel"
+  ADMIN_INFO=$(docker compose exec -T painel node src/criar-usuario.js "$ACME_EMAIL" "Administrador")
+fi
+
 cat <<EOF
 
 ✅ Instalação concluída.
 
-Antes de acessar, confirme que estes 3 registros DNS (tipo A) apontam para o IP deste servidor:
+Antes de acessar, confirme que estes 4 registros DNS (tipo A) apontam para o IP deste servidor:
+  ${PAINEL_SUBDOMAIN}.${DOMAIN}
   ${N8N_SUBDOMAIN}.${DOMAIN}
   ${EVOLUTION_SUBDOMAIN}.${DOMAIN}
   ${CHATWOOT_SUBDOMAIN}.${DOMAIN}
+
+  PAINEL DO ESCRITÓRIO:      https://${PAINEL_SUBDOMAIN}.${DOMAIN}
+      ${ADMIN_INFO}
 
   n8n (fluxos e IA):          https://${N8N_SUBDOMAIN}.${DOMAIN}
   Evolution API (WhatsApp):   https://${EVOLUTION_SUBDOMAIN}.${DOMAIN}/manager
@@ -98,5 +118,5 @@ Antes de acessar, confirme que estes 3 registros DNS (tipo A) apontam para o IP 
 
 Todas as senhas estão em $(pwd)/.env. Faça backup desse arquivo.
 Próximos passos: veja o README.md, seção "Depois de instalar".
-Para cadastrar o primeiro escritório: ./scripts/novo-escritorio.sh <instancia> "<Nome>"
+Para cadastrar o primeiro escritório: entre no painel e vá em "Escritórios" → "+ Novo escritório".
 EOF
