@@ -34,6 +34,20 @@ Evolution API ──webhook──▶ n8n: "1. Atendimento WhatsApp"
    Advogado responsável ◀─────┘ (resumo + contato do cliente pelo WhatsApp do escritório)
 ```
 
+### Como ficam os fluxos no n8n
+
+**Fluxo principal: atendimento pelo WhatsApp**
+![Fluxo de atendimento](docs/imagens/01-atendimento.png)
+
+**Agendar reunião** (valida o horário, reserva sem conflito, cria o evento no Google e avisa o advogado)
+![Fluxo de agendamento](docs/imagens/02-agendar.png)
+
+**Transferir para humano** (escolhe o responsável e envia resumo + contato no WhatsApp dele)
+![Fluxo de transferência](docs/imagens/03-transferir.png)
+
+**Rotinas** (lembretes, follow-up e agenda do dia)
+![Fluxo de rotinas](docs/imagens/04-rotinas.png)
+
 ### Fluxos (pasta `fluxos/`)
 
 | Fluxo | O que faz |
